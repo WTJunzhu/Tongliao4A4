@@ -1,0 +1,17 @@
+{
+  "name": "通辽4A4",
+  "appid": "__UNI__TONGLIAO",
+  "description": "通辽升级牌游戏",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "",
+    "setting": { "urlCheck": false },
+    "usingComponents": true
+  },
+  "h5": {
+    "title": "通辽4A4",
+    "router": { "mode": "hash" }
+  }
+}

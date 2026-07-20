@@ -1,0 +1,25 @@
+{
+  "easycom": {
+    "autoscan": true
+  },
+  "pages": [
+    {
+      "path": "pages/lobby/lobby",
+      "style": { "navigationBarTitleText": "通辽4A4" }
+    },
+    {
+      "path": "pages/room/room",
+      "style": { "navigationBarTitleText": "等待室" }
+    },
+    {
+      "path": "pages/game/game",
+      "style": { "navigationBarTitleText": "游戏中" }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "white",
+    "navigationBarBackgroundColor": "#1a1a2e",
+    "backgroundColor": "#1a1a2e"
+  },
+  "tabBar": {}
+}
