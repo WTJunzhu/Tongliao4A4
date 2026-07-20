@@ -221,25 +221,43 @@ hand_type.py
   - id: str
   - players: List[Player]
   - game: Game
-  - level: "3"~"A"           # 当前级别
-  - on_stage_team: 0|1        # 台上队伍
-  - rounds: List[RoundResult]   # 历史局
+  - team_levels: {0: "3"~"A", 1: "3"~"A"}   # 两队各自独立的级别
+  - on_stage_team: 0|1                         # 当前台上队伍
+  - rounds: List[RoundResult]                  # 历史局
 
 RoundResult:
-  - winners: List[int]         # 赢家座位号
+  - finish_order: List[int]    # 四名玩家出完牌的顺序（座位号，先出完的在前）
   - is_quan_dong: boolean
   - is_ban_dong: boolean
-  - is_li_gun: boolean        # 本局是否立棍/撅棍
+  - is_fan_dong: boolean
+  - is_li_gun: boolean         # 本局是否触发立棍
+  - li_gun_success: boolean    # 立棍成功/撅棍
+  - next_force_tribute: boolean  # 下一局是否强制执行全洞进贡还贡
 ```
 
-升/降级与台上/台下关系：
+**升/降级与台上/台下关系：**
 
-- 升级条件：台上队伍**全洞(+2级) / 半洞(+1级)**
-- 打3/J/A 时必须**全洞**才可升，否则停在原级
-- 台下队伍**先出完牌**(全洞/半洞) → **上台**
-- 打J时被台下先出完(反洞) → **直J**: 退回打3
-- 打A时被台下先出完(反洞) → **直A**: 退回打J
-- 级牌(会)的角色：升级机制的"计数锚点"，级牌是对子/单龙/双龙等牌型能否包含的界限
+- 两队级别**完全独立**，下台时级别冻结，上台后从自己的级别继续
+- 升级条件：台上队伍**全洞(+2级) / 半洞(+1级)**；台下队无论何种胜法均**只上台、不升级**
+- 3/J/A 是不可跳过的检查点，必须全洞才可离开；多级提升遇到第一个检查点立即停住
+- 实际可达级别序列：**3 → 5 → 6 → 7 → 8 → 9 → 10 → J → K → A**（4/Q/2 永远不可达）
+- 打J被台下先出完(反洞) → **直J**: 台上队退回打3并下台
+- 打A被台下先出完(反洞) → **直A**: 台上队退回打J并下台
+- 台下队立棍成功时例外：**上台 + 升2级**（同样受升级截断约束）
+
+**胜利条件判断（`check_game_over`）：**
+
+```python
+def check_game_over(team, level_before, level_after):
+    # 触发条件：打A全洞 → 回到打3，然后再次打3全洞
+    if level_before == "A" and level_after == "3":
+        team.awaiting_final_3 = True   # 标记：下次打3全洞即胜
+    if level_before == "3" and is_quan_dong and team.awaiting_final_3:
+        return True   # 游戏结束，该队获胜
+    return False
+```
+
+胜利路径：`打3全洞 → ... → 打J全洞 → ... → 打A全洞 → 打3全洞 → 游戏结束`
 
 ---
 
