@@ -23,24 +23,36 @@
       </view>
     </view>
 
-    <button
-      v-if="isFull && store.mySeat === 0"
-      class="btn start"
-      @tap="startGame"
-    >
-      开始游戏
-    </button>
-    <view v-else-if="isFull" class="wait-start">等待1号玩家开始游戏</view>
-    <view v-else class="wait-players">还需 {{ 4 - playerCount }} 人加入</view>
+    <view class="bottom-actions">
+      <button
+        v-if="!isFull"
+        class="btn add-bot"
+        @tap="addBot"
+      >
+        + 添加机器人 ({{ playerCount }}/4)
+      </button>
+
+      <button
+        v-if="isFull && store.mySeat === 0"
+        class="btn start"
+        @tap="startGame"
+      >
+        开始游戏
+      </button>
+      <view v-else-if="isFull" class="wait-start">等待1号玩家开始游戏</view>
+    </view>
+
+    <view v-if="botError" class="error">{{ botError }}</view>
   </view>
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useGameStore } from "../../store/game";
 import { socket } from "../../utils/socket";
 
 const store = useGameStore();
+const botError = ref("");
 
 const players = computed(() => store.roomState?.players || []);
 const playerCount = computed(() => players.value.length);
@@ -48,6 +60,21 @@ const isFull = computed(() => playerCount.value === 4);
 
 function getPlayer(seat) {
   return players.value.find((p) => p.seat === seat);
+}
+
+async function addBot() {
+  botError.value = "";
+  try {
+    const res = await uni.request({
+      url: `/api/rooms/${store.roomId}/bots`,
+      method: "POST",
+    });
+    if (res.statusCode !== 201) {
+      botError.value = res.data?.error || "添加失败";
+    }
+  } catch {
+    botError.value = "网络错误";
+  }
 }
 
 function startGame() {
@@ -126,10 +153,31 @@ socket.on("game_started", () => {
   width: 100%;
   border: none;
 }
-.wait-start, .wait-players {
+.wait-start {
   text-align: center;
   margin-top: 60rpx;
   color: #888;
   font-size: 30rpx;
+}
+.bottom-actions {
+  margin-top: 40rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+.btn.add-bot {
+  background: #0f3460;
+  color: #7eb8ff;
+  border-radius: 16rpx;
+  padding: 28rpx;
+  font-size: 32rpx;
+  width: 100%;
+  border: 2rpx solid #1a5276;
+}
+.error {
+  text-align: center;
+  margin-top: 20rpx;
+  color: #e94560;
+  font-size: 28rpx;
 }
 </style>

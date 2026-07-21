@@ -1,5 +1,6 @@
 import random
 import string
+import uuid
 from flask import Blueprint, jsonify, request
 from ..store import rooms, sessions, player_room, register_session
 
@@ -66,3 +67,32 @@ def reconnect():
         "seat": player.seat,
         "game_active": room.game is not None,
     })
+
+
+BOT_NAMES = ["机器人甲", "机器人乙", "机器人丙", "机器人丁"]
+
+
+@api_bp.route("/rooms/<room_id>/bots", methods=["POST"])
+def add_bot(room_id):
+    """往房间加一个机器人。房间满了返回 400。"""
+    from ..models.bot import BotPlayer
+    from .. import socketio
+
+    room = rooms.get(room_id.upper())
+    if not room:
+        return jsonify({"error": "not found"}), 404
+    if room.is_full():
+        return jsonify({"error": "room full"}), 400
+    if room.game is not None:
+        return jsonify({"error": "game already started"}), 400
+
+    seat = len(room.players)
+    bot_id = "bot_" + uuid.uuid4().hex[:8]
+    name = BOT_NAMES[seat % len(BOT_NAMES)]
+    bot = BotPlayer(bot_id, name, seat)
+    room.add_player(bot)
+    # 机器人不需要 session，但要注册 player_room 供 ws.py 查找
+    player_room[bot_id] = room_id.upper()
+
+    socketio.emit("room_state", room.to_dict(), to=room_id.upper())
+    return jsonify({"seat": seat, "name": name}), 201

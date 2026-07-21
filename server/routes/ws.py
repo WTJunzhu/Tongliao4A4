@@ -9,6 +9,7 @@ WebSocket 事件处理。
             respond_ligun
 """
 import threading
+import random
 from flask_socketio import emit, join_room as sio_join, leave_room as sio_leave
 from flask import request
 from .. import socketio
@@ -18,12 +19,14 @@ from ..models.room import Room
 from ..models.game import GameState
 from ..models.tribute import TributeState, TributeSelectionState, determine_tribute, validate_return_card
 from ..models.ligun import LigunState
+from ..models.bot import BotPlayer, bot_decide_play, bot_decide_tribute_select, bot_decide_return_card
 import uuid
 
 # 倒计时时长（秒）
 LIGUN_TIMEOUT = 15      # 每个玩家回答立棍的时间
 TRIBUTE_TIMEOUT = 30    # 赢家确认进贡牌的时间
 TRIBUTE_BACK_TIMEOUT = 30  # 赢家提交还贡的时间
+BOT_DELAY = 0.8         # 机器人行动前的模拟思考延迟（秒）
 
 
 # ------------------------------------------------------------------
@@ -158,6 +161,7 @@ def on_start_game(data):
     room.touch()
     socketio.emit("game_started", {"first_seat": room.game.current_seat}, to=room.id)
     _broadcast_game_state(room)
+    _schedule_bot(room)
 
 
 # ------------------------------------------------------------------
@@ -274,6 +278,7 @@ def _process_ligun_vote(room: Room, seat: int, do_ligun: bool):
         del room._ligun_state
         socketio.emit("ligun_started", {"li_gun_seat": li_seat}, to=room.id)
         _broadcast_game_state(room)
+        _schedule_bot(room)
 
     elif result["status"] == "no_ligun":
         del room._ligun_state
@@ -286,6 +291,7 @@ def _process_ligun_vote(room: Room, seat: int, do_ligun: bool):
         # 为下一位玩家启动倒计时
         _set_timer(room, "_ligun_timer", LIGUN_TIMEOUT,
                    _ligun_timeout, room.id, next_seat)
+        _schedule_bot(room)
 
 
 def _ligun_timeout(room_id: str, seat: int):
@@ -525,6 +531,7 @@ def _handle_events(room: Room, events: list):
             socketio.emit("game_action", ev, to=room.id)
     if not any(e["type"] == "round_end" for e in events):
         _broadcast_game_state(room)
+        _schedule_bot(room)
 
 
 def _handle_round_end(room: Room, finish_order: list):
@@ -716,6 +723,200 @@ def _start_next_round(room: Room):
     room.touch()
     socketio.emit("game_started", {"first_seat": room.game.current_seat}, to=room.id)
     _broadcast_game_state(room)
+    _schedule_bot(room)
+
+
+# ------------------------------------------------------------------
+# 机器人驱动
+# ------------------------------------------------------------------
+
+def _schedule_bot(room: Room):
+    """若当前轮到机器人，延迟后触发行动。"""
+    if not room.game or room.game.state not in (
+        GameState.PLAYING, GameState.CHA_ASKING, GameState.DIAN_ASKING
+    ):
+        # 检查立棍阶段
+        ligun_state = getattr(room, "_ligun_state", None)
+        if ligun_state:
+            ask_seat = ligun_state.current_ask_seat
+            player = room.players[ask_seat]
+            if getattr(player, "is_bot", False):
+                t = threading.Timer(BOT_DELAY, _bot_ligun, args=(room.id, ask_seat))
+                t.daemon = True
+                t.start()
+            return
+
+        # 检查进贡选牌阶段
+        tribute_phase = getattr(room, "_tribute_phase", None)
+        sel = getattr(room, "_selection_state", None)
+        tribute_state = getattr(room, "_tribute_state", None)
+        if tribute_phase in ("tribute_select", "return_select") and sel and tribute_state:
+            for seat in sel.selector_seats:
+                if sel.selections.get(seat) is None or seat not in sel.confirmations:
+                    player = room.players[seat]
+                    if getattr(player, "is_bot", False):
+                        t = threading.Timer(BOT_DELAY, _bot_tribute_select, args=(room.id,))
+                        t.daemon = True
+                        t.start()
+                        break
+            return
+
+        if tribute_phase == "return_submit" and tribute_state:
+            for seat in tribute_state.receiver_seats:
+                if not tribute_state.return_confirmed.get(seat):
+                    player = room.players[seat]
+                    if getattr(player, "is_bot", False):
+                        t = threading.Timer(BOT_DELAY, _bot_return_submit, args=(room.id, seat))
+                        t.daemon = True
+                        t.start()
+            return
+        return
+
+    game = room.game
+    current = game.current_seat
+    if game.state == GameState.CHA_ASKING:
+        current = game.asking_seat
+    elif game.state == GameState.DIAN_ASKING:
+        current = game.asking_seat
+
+    if current is None:
+        return
+
+    player = room.players[current]
+    if not getattr(player, "is_bot", False):
+        return
+
+    delay = BOT_DELAY + random.uniform(0, 0.4)
+    t = threading.Timer(delay, _bot_act, args=(room.id, current))
+    t.daemon = True
+    t.start()
+
+
+def _bot_act(room_id: str, seat: int):
+    """机器人执行出牌/pass/叉/点动作。"""
+    room = rooms.get(room_id)
+    if not room or not room.game:
+        return
+    game = room.game
+    player = room.players[seat]
+
+    if game.state == GameState.CHA_ASKING and game.asking_seat == seat:
+        result = game.respond_cha(seat, False)  # 机器人不叉
+        if result["ok"]:
+            room.touch()
+            _handle_events(room, result["events"])
+        return
+
+    if game.state == GameState.DIAN_ASKING and game.asking_seat == seat:
+        result = game.respond_dian(seat, False)  # 机器人不点
+        if result["ok"]:
+            room.touch()
+            _handle_events(room, result["events"])
+        return
+
+    if game.state != GameState.PLAYING or game.current_seat != seat:
+        return
+
+    table = game.last_play if game.last_play_seat != seat else None
+    indices = bot_decide_play(player.hand, table, game.level_rank)
+
+    if indices is None:
+        result = game.pass_turn(seat)
+        if result["ok"]:
+            room.touch()
+            _handle_events(room, result["events"])
+    else:
+        result = game.play(seat, indices)
+        if result["ok"]:
+            room.touch()
+            _handle_events(room, result["events"])
+        else:
+            # 出牌失败则 pass（保守兜底）
+            result = game.pass_turn(seat)
+            if result["ok"]:
+                room.touch()
+                _handle_events(room, result["events"])
+
+
+def _bot_ligun(room_id: str, seat: int):
+    """机器人立棍响应：一律不立。"""
+    room = rooms.get(room_id)
+    if not room:
+        return
+    ligun_state = getattr(room, "_ligun_state", None)
+    if not ligun_state or ligun_state.current_ask_seat != seat:
+        return
+    _cancel_timer(room, "_ligun_timer")
+    _process_ligun_vote(room, seat, False)
+
+
+def _bot_tribute_select(room_id: str):
+    """机器人进贡/还贡选牌：选第一张可用的，然后确认。"""
+    room = rooms.get(room_id)
+    if not room:
+        return
+    sel: TributeSelectionState = getattr(room, "_selection_state", None)
+    if not sel:
+        return
+    phase = getattr(room, "_tribute_phase", None)
+    tribute_state: TributeState = getattr(room, "_tribute_state", None)
+
+    for seat in sel.selector_seats:
+        player = room.players[seat]
+        if not getattr(player, "is_bot", False):
+            continue
+        if sel.selections.get(seat) is None and not sel.pending_swap:
+            giver_seat = bot_decide_tribute_select(sel.selector_seats, sel.cards, seat)
+            if giver_seat is not None:
+                sel.select(seat, giver_seat)
+                socketio.emit("tribute_selection_update", sel.to_dict(), to=room.id)
+
+    # 所有机器人选完后尝试确认
+    for seat in sel.selector_seats:
+        player = room.players[seat]
+        if getattr(player, "is_bot", False) and seat not in sel.confirmations:
+            if sel.can_confirm():
+                result = sel.confirm(seat)
+                socketio.emit("tribute_selection_update", sel.to_dict(), to=room.id)
+                if result.get("complete"):
+                    _cancel_timer(room, "_tribute_timer")
+                    if phase == "tribute_select":
+                        _apply_tribute_selection(room, tribute_state, sel)
+                        _start_return_submit_phase(room, tribute_state)
+                    else:
+                        _apply_return_selection(room, tribute_state, sel)
+                        _finish_tribute(room)
+                    return
+
+
+def _bot_return_submit(room_id: str, seat: int):
+    """机器人提交还贡牌。"""
+    room = rooms.get(room_id)
+    if not room:
+        return
+    tribute_state: TributeState = getattr(room, "_tribute_state", None)
+    if not tribute_state or tribute_state.return_confirmed.get(seat):
+        return
+
+    player = room.players[seat]
+    level = room.team_levels[room.on_stage_team]
+    card_index = bot_decide_return_card(player.hand, level)
+    if card_index is None:
+        return
+
+    card = player.hand[card_index]
+    tribute_state.return_cards[seat] = card
+    tribute_state.return_confirmed[seat] = True
+    room.touch()
+
+    if not tribute_state.is_return_complete():
+        socketio.emit("tribute_back_partial", {"seat": seat}, to=room.id)
+        # 检查剩余机器人
+        _schedule_bot(room)
+        return
+
+    _cancel_timer(room, "_tribute_timer")
+    _start_return_select_phase(room, tribute_state)
 
 
 # ------------------------------------------------------------------

@@ -158,6 +158,7 @@ class Room:
             "is_ban_dong": result.is_ban_dong,
             "winner_team": winner_team,
             "level_before": level,
+            "finish_order": finish_order,
         }
 
         if winner_team == self.on_stage_team:
@@ -202,7 +203,7 @@ class Room:
         success = finish_order[0] == li_gun_seat
 
         self.next_force_tribute = True
-        summary = {"li_gun_success": success}
+        summary = {"li_gun_success": success, "finish_order": finish_order}
 
         if success:
             if li_gun_team == self.on_stage_team:
