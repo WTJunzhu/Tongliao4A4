@@ -9,7 +9,7 @@ from .player import Player
 from .deck import build_deck, shuffle_and_deal
 from .game import Game, GameState
 
-LEVEL_SEQ = ["3", "5", "6", "7", "8", "9", "10", "J", "K", "A"]
+LEVEL_SEQ = ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
 CHECKPOINTS = {"3", "J", "A"}   # 必须全洞才能离开的级别
 
 

@@ -71,6 +71,13 @@ export const socket = {
     if (!_listeners[event]) _listeners[event] = [];
     _listeners[event].push(handler);
   },
+  once(event, handler) {
+    const wrapper = (...args) => {
+      handler(...args);
+      this.off(event, wrapper);
+    };
+    this.on(event, wrapper);
+  },
   off(event, handler) {
     if (!_listeners[event]) return;
     if (handler) {

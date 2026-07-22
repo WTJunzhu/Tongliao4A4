@@ -26,7 +26,9 @@ import uuid
 LIGUN_TIMEOUT = 15      # 每个玩家回答立棍的时间
 TRIBUTE_TIMEOUT = 30    # 赢家确认进贡牌的时间
 TRIBUTE_BACK_TIMEOUT = 30  # 赢家提交还贡的时间
+FIRST_SEAT_TIMEOUT = 20  # 全洞后输家选先手的时间
 BOT_DELAY = 0.8         # 机器人行动前的模拟思考延迟（秒）
+TRIBUTE_ANIM_DELAY = 1.2  # 进贡/还贡动画时长（秒）
 
 
 # ------------------------------------------------------------------
@@ -153,15 +155,17 @@ def on_start_game(data):
 
     if not room.round_results:
         first_seat = room.start_first_round()
+        room._last_finish_order = [first_seat]
     else:
         finish_order = getattr(room, "_last_finish_order", [])
         first_seat = finish_order[0] if finish_order else 0
         room.start_round(first_seat)
 
     room.touch()
-    socketio.emit("game_started", {"first_seat": room.game.current_seat}, to=room.id)
+    # 先跳转到游戏页，让玩家看到手牌，然后询问立棍
+    socketio.emit("game_started", {"first_seat": first_seat}, to=room.id)
     _broadcast_game_state(room)
-    _schedule_bot(room)
+    _start_ligun_phase(room, first_seat)
 
 
 # ------------------------------------------------------------------
@@ -256,6 +260,26 @@ def on_respond_ligun(data):
     _process_ligun_vote(room, player.seat, data.get("do_ligun", False))
 
 
+@socketio.on("respond_first_seat")
+def on_respond_first_seat(data):
+    player_id = _sid_to_player_id(request.sid)
+    room, player = _get_room_player(player_id)
+    if not room or not player:
+        return
+
+    state = getattr(room, "_first_seat_state", None)
+    if not state or state["chosen"] is not None:
+        return
+    if player.seat not in state["candidates"]:
+        emit("error", {"msg": "你不在候选人列表中"})
+        return
+
+    _cancel_timer(room, "_first_seat_timer")
+    state["chosen"] = player.seat
+    del room._first_seat_state
+    _begin_play(room, player.seat)
+
+
 def _process_ligun_vote(room: Room, seat: int, do_ligun: bool):
     ligun_state: LigunState = getattr(room, "_ligun_state", None)
     if not ligun_state:
@@ -276,14 +300,20 @@ def _process_ligun_vote(room: Room, seat: int, do_ligun: bool):
         room.players[teammate_seat].locked = True
         room.game.current_seat = li_seat
         del room._ligun_state
+        # 立棍成功：进贡还贡作废，直接让立棍者开始出牌
+        room._tribute_state = None
+        room._tribute_phase = None
+        room._selection_state = None
         socketio.emit("ligun_started", {"li_gun_seat": li_seat}, to=room.id)
+        socketio.emit("game_started", {"first_seat": li_seat}, to=room.id)
         _broadcast_game_state(room)
         _schedule_bot(room)
 
     elif result["status"] == "no_ligun":
         del room._ligun_state
-        finish_order = getattr(room, "_last_finish_order", [])
-        _tribute_or_start(room, finish_order)
+        # 无人立棍：进入进贡流程（或直接开始出牌）
+        first_seat = room.game.current_seat
+        _after_ligun(room, first_seat)
 
     else:
         next_seat = result["next_seat"]
@@ -417,8 +447,22 @@ def on_tribute_confirm(data):
         _cancel_timer(room, "_tribute_timer")
         tribute_state: TributeState = getattr(room, "_tribute_state", None)
         if phase == "tribute_select":
-            _apply_tribute_selection(room, tribute_state, sel)
-            _start_return_submit_phase(room, tribute_state)
+            # 先发动画事件（全洞：牌从中间选择框飞向赢家）
+            transfers = []
+            for selector_seat, giver_seat in sel.selections.items():
+                if giver_seat is None:
+                    continue
+                card = sel.cards.get(giver_seat)
+                if card:
+                    transfers.append({
+                        "giver_seat": int(giver_seat),
+                        "receiver_seat": int(selector_seat),
+                        "card": card.to_dict(),
+                    })
+            socketio.emit("tribute_cards_to_winners", {"transfers": transfers}, to=room.id)
+            room._pending_sel = sel
+            _set_timer(room, "_tribute_anim_timer", TRIBUTE_ANIM_DELAY,
+                       _after_quan_dong_tribute_anim, room.id)
         else:
             _apply_return_selection(room, tribute_state, sel)
             _finish_tribute(room)
@@ -467,7 +511,32 @@ def on_tribute_return_submit(data):
         return
 
     _cancel_timer(room, "_tribute_timer")
-    _start_return_select_phase(room, tribute_state)
+    # 先发动画事件：还贡牌从赢家手中飞回输家
+    transfers = []
+    for receiver_seat, giver_seat in zip(tribute_state.receiver_seats, tribute_state.giver_seats):
+        card = tribute_state.return_cards.get(receiver_seat)
+        if card:
+            transfers.append({
+                "returner_seat": int(receiver_seat),
+                "original_giver_seat": int(giver_seat),
+                "card": card.to_dict(),
+            })
+    socketio.emit("return_cards_delivered", {"transfers": transfers}, to=room.id)
+    _set_timer(room, "_tribute_anim_timer", TRIBUTE_ANIM_DELAY,
+               _after_return_anim, room.id)
+
+
+def _after_return_anim(room_id: str):
+    """还贡动画结束后：实际转移还贡牌，广播，完成进贡流程。"""
+    room = rooms.get(room_id)
+    if not room:
+        return
+    tribute_state: TributeState = getattr(room, "_tribute_state", None)
+    if not tribute_state:
+        return
+    _apply_return_direct(room, tribute_state)
+    _broadcast_game_state(room)
+    _finish_tribute(room)
 
 
 def _tribute_selection_timeout(room_id: str, phase: str):
@@ -486,7 +555,9 @@ def _tribute_selection_timeout(room_id: str, phase: str):
     tribute_state: TributeState = getattr(room, "_tribute_state", None)
     if phase == "tribute_select":
         socketio.emit("tribute_timeout", {"phase": "tribute_select"}, to=room_id)
+        # 超时不播动画，直接转移牌
         _apply_tribute_selection(room, tribute_state, sel)
+        _broadcast_game_state(room)
         _start_return_submit_phase(room, tribute_state)
     else:
         socketio.emit("tribute_timeout", {"phase": "return_select"}, to=room_id)
@@ -516,7 +587,19 @@ def _tribute_return_submit_timeout(room_id: str):
                 tribute_state.return_confirmed[seat] = True
 
     socketio.emit("tribute_back_timeout", {}, to=room_id)
-    _start_return_select_phase(room, tribute_state)
+    # 先发动画事件，1.2s 后实际转移
+    transfers = []
+    for receiver_seat, giver_seat in zip(tribute_state.receiver_seats, tribute_state.giver_seats):
+        card = tribute_state.return_cards.get(receiver_seat)
+        if card:
+            transfers.append({
+                "returner_seat": int(receiver_seat),
+                "original_giver_seat": int(giver_seat),
+                "card": card.to_dict(),
+            })
+    socketio.emit("return_cards_delivered", {"transfers": transfers}, to=room_id)
+    _set_timer(room, "_tribute_anim_timer", TRIBUTE_ANIM_DELAY,
+               _after_return_anim, room_id)
 
 
 # ------------------------------------------------------------------
@@ -548,12 +631,22 @@ def _handle_round_end(room: Room, finish_order: list):
         socketio.emit("game_over", {"winner_team": summary.get("game_winner")}, to=room.id)
         return
 
-    # 先立棍，再进贡
-    _start_ligun_phase(room, finish_order[0])
+    # 先发牌让玩家看到手牌，再询问立棍；立棍结束后才进进贡流程
+    _deal_and_start_ligun(room, finish_order)
 
 
-def _tribute_or_start(room: Room, finish_order: list):
-    """立棍结束后：有进贡走进贡流程，否则直接开新局。"""
+def _deal_and_start_ligun(room: Room, finish_order: list):
+    """发牌，广播手牌，然后询问立棍。立棍结束后走 _after_ligun。"""
+    first_seat = finish_order[0] if finish_order else 0
+    room.start_round(first_seat)
+    room.touch()
+    _broadcast_game_state(room)
+    _start_ligun_phase(room, first_seat)
+
+
+def _after_ligun(room: Room, first_seat: int):
+    """立棍结束（无人立棍）后：判断是否需要进贡，否则直接开始出牌。"""
+    finish_order = getattr(room, "_last_finish_order", [])
     tribute_state = determine_tribute(
         finish_order,
         room.players,
@@ -563,11 +656,74 @@ def _tribute_or_start(room: Room, finish_order: list):
     room.next_force_tribute = False
 
     if tribute_state is None:
-        _start_next_round(room)
+        _begin_play(room, first_seat)
         return
 
     room._tribute_state = tribute_state
-    _start_tribute_select_phase(room, tribute_state)
+    room._pending_first_seat = first_seat
+
+    if tribute_state.tribute_type == "ban_dong":
+        _start_ban_dong_tribute(room, tribute_state)
+    else:
+        _start_tribute_select_phase(room, tribute_state)
+
+
+def _start_ban_dong_tribute(room: Room, tribute_state: TributeState):
+    """半洞进贡：先播动画，1.2s 后实际转移牌并进入还贡流程。"""
+    giver_seat = tribute_state.giver_seats[0]
+    receiver_seat = tribute_state.receiver_seats[0]
+    card = tribute_state.tribute_cards.get(giver_seat)
+    # 先发动画事件（此时牌还在输家手中），让前端播放飞牌动画
+    socketio.emit("tribute_auto_apply", {
+        "giver_seat": giver_seat,
+        "receiver_seat": receiver_seat,
+        "card": card.to_dict() if card else None,
+    }, to=room.id)
+    _set_timer(room, "_tribute_anim_timer", TRIBUTE_ANIM_DELAY,
+               _after_ban_dong_tribute_anim, room.id)
+
+
+def _after_ban_dong_tribute_anim(room_id: str):
+    """半洞进贡动画结束后：实际转移牌，广播，进入还贡阶段。"""
+    room = rooms.get(room_id)
+    if not room:
+        return
+    tribute_state: TributeState = getattr(room, "_tribute_state", None)
+    if not tribute_state:
+        return
+    _auto_apply_tribute(room, tribute_state)
+    _broadcast_game_state(room)
+    _start_return_submit_phase(room, tribute_state)
+
+
+def _auto_apply_tribute(room: Room, tribute_state: TributeState):
+    """系统自动进贡：将 tribute_cards 从进贡方手中移到接收方手中（按 giver→receiver 顺序配对）。"""
+    player_map = {p.seat: p for p in room.players}
+    level = room.team_levels[room.on_stage_team]
+    for giver_seat, receiver_seat in zip(tribute_state.giver_seats, tribute_state.receiver_seats):
+        card = tribute_state.tribute_cards.get(giver_seat)
+        if card is None:
+            continue
+        giver = player_map.get(giver_seat)
+        receiver = player_map.get(receiver_seat)
+        if not giver or not receiver:
+            continue
+        try:
+            idx = next(j for j, c in enumerate(giver.hand) if c is card)
+            giver.remove_cards([idx])
+        except StopIteration:
+            pass
+        receiver.hand.append(card)
+        from ..models.hand_type import sort_hand
+        receiver.hand = sort_hand(receiver.hand, level)
+
+
+def _begin_play(room: Room, first_seat: int):
+    """进贡完成（或跳过）后，正式开始出牌。"""
+    room.game.current_seat = first_seat
+    socketio.emit("game_started", {"first_seat": first_seat}, to=room.id)
+    _broadcast_game_state(room)
+    _schedule_bot(room)
 
 
 def _start_tribute_select_phase(room: Room, tribute_state: TributeState):
@@ -591,11 +747,54 @@ def _start_tribute_select_phase(room: Room, tribute_state: TributeState):
             "giver_seats": tribute_state.giver_seats,
             "receiver_seats": tribute_state.receiver_seats,
             "selection": sel.to_dict(),
+            "tribute_cards": {
+                str(g): tribute_state.tribute_cards[g].to_dict()
+                for g in tribute_state.giver_seats
+                if tribute_state.tribute_cards.get(g) is not None
+            },
         },
         to=room.id,
     )
     _set_timer(room, "_tribute_timer", TRIBUTE_TIMEOUT,
                _tribute_selection_timeout, room.id, "tribute_select")
+
+
+def _after_quan_dong_tribute_anim(room_id: str):
+    """全洞进贡动画结束后：实际转移牌，广播，进入还贡阶段。"""
+    room = rooms.get(room_id)
+    if not room:
+        return
+    tribute_state: TributeState = getattr(room, "_tribute_state", None)
+    sel: TributeSelectionState = getattr(room, "_pending_sel", None)
+    if not tribute_state or not sel:
+        return
+    if hasattr(room, "_pending_sel"):
+        del room._pending_sel
+    _apply_tribute_selection(room, tribute_state, sel)
+    _broadcast_game_state(room)
+    _start_return_submit_phase(room, tribute_state)
+
+
+def _apply_return_direct(room: Room, tribute_state: TributeState):
+    """将 return_cards 从赢家手中直接转移给对应的输家。"""
+    player_map = {p.seat: p for p in room.players}
+    level = room.team_levels[room.on_stage_team]
+    for receiver_seat, giver_seat in zip(tribute_state.receiver_seats, tribute_state.giver_seats):
+        card = tribute_state.return_cards.get(receiver_seat)
+        if card is None:
+            continue
+        returner = player_map.get(receiver_seat)
+        original_giver = player_map.get(giver_seat)
+        if not returner or not original_giver:
+            continue
+        try:
+            idx = next(j for j, c in enumerate(returner.hand) if c is card)
+            returner.remove_cards([idx])
+        except StopIteration:
+            pass
+        original_giver.hand.append(card)
+        from ..models.hand_type import sort_hand
+        original_giver.hand = sort_hand(original_giver.hand, level)
 
 
 def _apply_tribute_selection(room: Room, tribute_state: TributeState,
@@ -627,13 +826,23 @@ def _apply_tribute_selection(room: Room, tribute_state: TributeState,
 
 
 def _start_return_submit_phase(room: Room, tribute_state: TributeState):
-    """还贡提交阶段：receiver_seats 每人独立提交一张还贡牌。"""
+    """还贡提交阶段：receiver_seats 每人独立提交一张还贡牌。附带进贡信息供前端展示。"""
     room._tribute_phase = "return_submit"
+    # 整理进贡信息：giver_seat → {card, receiver_seat}
+    tribute_info = {}
+    for giver_seat, receiver_seat in zip(tribute_state.giver_seats, tribute_state.receiver_seats):
+        card = tribute_state.tribute_cards.get(giver_seat)
+        if card:
+            tribute_info[str(giver_seat)] = {
+                "card": card.to_dict(),
+                "receiver_seat": receiver_seat,
+            }
     socketio.emit(
         "tribute_return_request",
         {
             "receiver_seats": tribute_state.receiver_seats,
             "giver_seats": tribute_state.giver_seats,
+            "tribute_info": tribute_info,
         },
         to=room.id,
     )
@@ -697,14 +906,31 @@ def _apply_return_selection(room: Room, tribute_state: TributeState,
 
 
 def _finish_tribute(room: Room):
-    """还贡完成，清理状态，广播并开新局。"""
+    """还贡完成，清理状态，广播，然后进入先手选择或直接开始出牌。"""
+    tribute_state = getattr(room, "_tribute_state", None)
+    tribute_type = tribute_state.tribute_type if tribute_state else None
+    finish_order = getattr(room, "_last_finish_order", [])
+    pending_first = getattr(room, "_pending_first_seat", finish_order[0] if finish_order else 0)
+
     if hasattr(room, "_tribute_state"):
         del room._tribute_state
     if hasattr(room, "_tribute_phase"):
         del room._tribute_phase
+    if hasattr(room, "_pending_first_seat"):
+        del room._pending_first_seat
+
     socketio.emit("tribute_complete", {}, to=room.id)
     _broadcast_game_state(room)
-    _start_next_round(room)
+
+    # 全洞情况：输家两人都没出完，需要选先手
+    if tribute_type == "quan_dong" and len(finish_order) < 4:
+        winner_team = finish_order[0] % 2
+        loser_team = 1 - winner_team
+        loser_seats = [p.seat for p in room.players if p.seat % 2 == loser_team]
+        _start_first_seat_select(room, loser_seats, pending_first)
+        return
+
+    _begin_play(room, pending_first)
 
 
 def _start_ligun_phase(room: Room, first_seat: int):
@@ -715,15 +941,27 @@ def _start_ligun_phase(room: Room, first_seat: int):
                _ligun_timeout, room.id, seat_order[0])
 
 
-def _start_next_round(room: Room):
-    """进贡/土皇上流程结束，开始下一局。"""
-    finish_order = getattr(room, "_last_finish_order", [])
-    first_seat = finish_order[0] if finish_order else 0
-    room.start_round(first_seat)
-    room.touch()
-    socketio.emit("game_started", {"first_seat": room.game.current_seat}, to=room.id)
-    _broadcast_game_state(room)
-    _schedule_bot(room)
+def _start_first_seat_select(room: Room, candidate_seats: list, fallback_seat: int):
+    """全洞后：同时询问输家两人谁先出，任意一人点击生效；超时兜底手牌最多者。"""
+    # 兜底：手牌最多的那个人
+    player_map = {p.seat: p for p in room.players}
+    fallback = max(candidate_seats, key=lambda s: len(player_map[s].hand))
+    room._first_seat_state = {"candidates": candidate_seats, "fallback": fallback, "chosen": None}
+    socketio.emit("first_seat_ask", {"candidate_seats": candidate_seats}, to=room.id)
+    _set_timer(room, "_first_seat_timer", FIRST_SEAT_TIMEOUT,
+               _first_seat_timeout, room.id)
+
+
+def _first_seat_timeout(room_id: str):
+    room = rooms.get(room_id)
+    if not room:
+        return
+    state = getattr(room, "_first_seat_state", None)
+    if not state or state["chosen"] is not None:
+        return
+    fallback = state["fallback"]
+    del room._first_seat_state
+    _begin_play(room, fallback)
 
 
 # ------------------------------------------------------------------
@@ -732,21 +970,25 @@ def _start_next_round(room: Room):
 
 def _schedule_bot(room: Room):
     """若当前轮到机器人，延迟后触发行动。"""
+    # 立棍阶段优先（game.state 此时已是 PLAYING，必须先检查）
+    ligun_state = getattr(room, "_ligun_state", None)
+    if ligun_state:
+        ask_seat = ligun_state.current_ask_seat
+        player = room.players[ask_seat]
+        if getattr(player, "is_bot", False):
+            t = threading.Timer(BOT_DELAY, _bot_ligun, args=(room.id, ask_seat))
+            t.daemon = True
+            t.start()
+        return
+
+    # 全洞先手选择阶段：机器人直接让超时兜底处理（不主动抢先手）
+    first_seat_state = getattr(room, "_first_seat_state", None)
+    if first_seat_state:
+        return
+
     if not room.game or room.game.state not in (
         GameState.PLAYING, GameState.CHA_ASKING, GameState.DIAN_ASKING
     ):
-        # 检查立棍阶段
-        ligun_state = getattr(room, "_ligun_state", None)
-        if ligun_state:
-            ask_seat = ligun_state.current_ask_seat
-            player = room.players[ask_seat]
-            if getattr(player, "is_bot", False):
-                t = threading.Timer(BOT_DELAY, _bot_ligun, args=(room.id, ask_seat))
-                t.daemon = True
-                t.start()
-            return
-
-        # 检查进贡选牌阶段
         tribute_phase = getattr(room, "_tribute_phase", None)
         sel = getattr(room, "_selection_state", None)
         tribute_state = getattr(room, "_tribute_state", None)
@@ -881,8 +1123,21 @@ def _bot_tribute_select(room_id: str):
                 if result.get("complete"):
                     _cancel_timer(room, "_tribute_timer")
                     if phase == "tribute_select":
-                        _apply_tribute_selection(room, tribute_state, sel)
-                        _start_return_submit_phase(room, tribute_state)
+                        transfers = []
+                        for selector_seat, giver_seat in sel.selections.items():
+                            if giver_seat is None:
+                                continue
+                            card = sel.cards.get(giver_seat)
+                            if card:
+                                transfers.append({
+                                    "giver_seat": int(giver_seat),
+                                    "receiver_seat": int(selector_seat),
+                                    "card": card.to_dict(),
+                                })
+                        socketio.emit("tribute_cards_to_winners", {"transfers": transfers}, to=room.id)
+                        room._pending_sel = sel
+                        _set_timer(room, "_tribute_anim_timer", TRIBUTE_ANIM_DELAY,
+                                   _after_quan_dong_tribute_anim, room.id)
                     else:
                         _apply_return_selection(room, tribute_state, sel)
                         _finish_tribute(room)

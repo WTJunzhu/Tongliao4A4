@@ -81,7 +81,7 @@ function startGame() {
   socket.emit("start_game", {});
 }
 
-socket.on("game_started", () => {
+socket.once("game_started", () => {
   uni.redirectTo({ url: "/pages/game/game" });
 });
 </script>

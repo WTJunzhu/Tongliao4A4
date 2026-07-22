@@ -15,20 +15,19 @@
 import { computed } from "vue";
 
 const props = defineProps({
-  card: { type: Object, required: true },
-  levelRank: { type: String, default: "3" },
-  selected: { type: Boolean, default: false },
+  card:      { type: Object,  required: true },
+  levelRank: { type: String,  default: "3" },
+  selected:  { type: Boolean, default: false },
 });
 defineEmits(["tap"]);
 
-const SUIT_ICON = { spade: "♠", heart: "♥", club: "♣", diamond: "♦", joker: "🃏" };
-const SUIT_CLASS = { spade: "black", heart: "red", club: "black", diamond: "red", joker: "joker-suit" };
+const SUIT_ICON  = { spade:"♠", heart:"♥", club:"♣", diamond:"♦", joker:"🃏" };
+const SUIT_CLASS = { spade:"black", heart:"red", club:"black", diamond:"red", joker:"joker-suit" };
 
-const suitIcon = computed(() => SUIT_ICON[props.card.suit] || "");
+const suitIcon  = computed(() => SUIT_ICON[props.card.suit]  || "");
 const suitClass = computed(() => SUIT_CLASS[props.card.suit] || "");
-const isLevel = computed(() => props.card.rank === props.levelRank && props.card.suit !== "joker");
-const isJoker = computed(() => props.card.suit === "joker");
-
+const isLevel   = computed(() => props.card.rank === props.levelRank && props.card.suit !== "joker");
+const isJoker   = computed(() => props.card.suit === "joker");
 const displayRank = computed(() => {
   if (props.card.suit === "joker") return props.card.rank === "RJ" ? "大" : "小";
   return props.card.rank;
@@ -37,35 +36,39 @@ const displayRank = computed(() => {
 
 <style scoped>
 .card {
-  width: 72rpx;
-  height: 100rpx;
+  width: 48px;
+  height: 68px;
   background: #fff;
-  border-radius: 8rpx;
+  border-radius: 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 6rpx 4rpx;
-  font-size: 26rpx;
+  padding: 4px 3px;
+  font-size: 14px;
   font-weight: bold;
   position: relative;
-  box-shadow: 0 2rpx 6rpx rgba(0,0,0,0.4);
-  transition: transform 0.15s;
+  box-shadow: 0 2px 5px rgba(0,0,0,.55);
   box-sizing: border-box;
   user-select: none;
+  flex-shrink: 0;
+  transition: transform 0.12s, box-shadow 0.12s;
 }
-.card.selected { transform: translateY(-16rpx); box-shadow: 0 8rpx 16rpx rgba(233,69,96,0.5); }
-.card.red { color: #c0392b; }
-.card.black { color: #1a1a2e; }
-.card.joker-suit { color: #6c3483; }
-.card.level { background: #fff8dc; border: 2rpx solid #f39c12; }
-.suit-icon { font-size: 30rpx; }
-.rank.bottom { transform: rotate(180deg); }
+.card.selected {
+  transform: translateY(-20px);
+  box-shadow: 0 10px 18px rgba(233,69,96,.65);
+}
+.card.red       { color: #c0392b; }
+.card.black     { color: #1a1a2e; }
+.card.joker-suit{ color: #6c3483; }
+.card.level     { background: #fff8dc; border: 1px solid #f39c12; }
+.suit-icon      { font-size: 18px; }
+.rank           { font-size: 13px; line-height: 1; }
+.rank.bottom    { transform: rotate(180deg); }
 .level-mark {
   position: absolute;
-  top: 2rpx;
-  right: 4rpx;
-  font-size: 18rpx;
+  top: 2px; right: 3px;
+  font-size: 11px;
   color: #f39c12;
 }
 </style>
