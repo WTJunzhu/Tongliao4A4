@@ -1,12 +1,13 @@
+import os
 from flask import Flask
 from flask_socketio import SocketIO
 
-socketio = SocketIO(cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(cors_allowed_origins="*", async_mode=os.environ.get("ASYNC_MODE", "threading"))
 
 
 def create_app():
     app = Flask(__name__)
-    app.config["SECRET_KEY"] = "tongliao4a4-dev"
+    app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "tongliao4a4-dev")
 
     socketio.init_app(app)
 
