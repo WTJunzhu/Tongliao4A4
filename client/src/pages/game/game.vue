@@ -18,6 +18,7 @@
       <view class="row-mid">
 
         <view class="side" ref="leftSideRef">
+          <view class="pchip" :class="{ active: leftOpp?.seat === gs?.current_seat }">
             <text class="pname">{{ leftOpp?.name || '—' }}</text>
             <view class="fan fan-v">
               <view v-for="i in fanN(leftOpp)" :key="i" class="cb" :style="fanV(i-1, fanN(leftOpp))" />
@@ -41,6 +42,7 @@
         </view>
 
         <view class="side" ref="rightSideRef">
+          <view class="pchip" :class="{ active: rightOpp?.seat === gs?.current_seat }">
             <text class="pname">{{ rightOpp?.name || '—' }}</text>
             <view class="fan fan-v">
               <view v-for="i in fanN(rightOpp)" :key="i" class="cb" :style="fanV(i-1, fanN(rightOpp))" />
