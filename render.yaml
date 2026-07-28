@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tongliao4a4-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT
+    plan: starter
+    envVars:
+      - key: ASYNC_MODE
+        value: eventlet
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.9
