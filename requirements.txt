@@ -1,4 +1,5 @@
 flask>=3.0
 flask-socketio>=5.3
-eventlet>=0.35
+gevent>=24.2
+gevent-websocket>=0.10
 gunicorn>=21.2
