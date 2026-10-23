@@ -17,7 +17,7 @@
           @tap="selectCard(Number(giverSeat))"
         >
           <CardSprite :card="card" :level-rank="levelRank" />
-          <text class="giver-label">{{ playerName(Number(giverSeat)) }}进贡</text>
+          <text class="giver-label">{{ playerName(Number(giverSeat)) }}{{ phase === "tribute_select" ? "进贡" : "还贡" }}</text>
           <view class="selector-label">
             <text v-if="mySelection == giverSeat" class="label me">我选</text>
             <text v-else-if="otherSelection == giverSeat" class="label other">Ta选</text>

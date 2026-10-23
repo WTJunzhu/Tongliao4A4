@@ -184,7 +184,7 @@ class TestDeck:
 
 class TestNextLevel:
     def test_normal_step(self):
-        assert next_level("3", 1) == "5"
+        assert next_level("3", 2) == "5"   # 打3全洞：3→4→5
         assert next_level("5", 1) == "6"
         assert next_level("6", 2) == "8"
 
@@ -215,7 +215,7 @@ class TestRoomSettle:
         r = self._room()
         summary = r.settle_round([0, 2, 1, 3])   # 队0全洞
         assert summary["is_quan_dong"]
-        assert summary["level_after"] == "6"     # 3→5→6（5不是checkpoint）
+        assert summary["level_after"] == "5"     # 3→4→5
 
     def test_ban_dong_upgrades_1_on_non_checkpoint(self):
         r = self._room()

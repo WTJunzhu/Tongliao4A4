@@ -117,10 +117,12 @@ def _combinations(iterable, r):
         yield tuple(pool[i] for i in indices)
 
 
-def bot_decide_tribute_select(selector_seats: list, cards: dict, my_seat: int) -> Optional[int]:
-    """进贡/还贡选牌：选第一张可用的牌（最简单）。"""
+def bot_decide_tribute_select(selections: dict, cards: dict, my_seat: int) -> Optional[int]:
+    """进贡/还贡选牌：选第一张还没被别人预选的牌（避免发起机器人不会处理的交换请求）。"""
+    taken = {g for s, g in selections.items() if s != my_seat and g is not None}
     for giver_seat in cards:
-        return giver_seat  # 直接选第一张
+        if giver_seat not in taken:
+            return giver_seat
     return None
 
 

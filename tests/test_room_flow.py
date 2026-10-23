@@ -175,7 +175,7 @@ class TestFullRound:
             r.add_player(Player(f"p{i}", f"P{i}", i))
         first = r.start_first_round()
         assert r.game is not None
-        assert r.game.state == GameState.PLAYING
+        assert r.game.state == GameState.PRE_PLAY   # 先立棍/进贡
         # 手牌总数54
         total = sum(len(p.hand) for p in r.players)
         assert total == 54
@@ -200,7 +200,7 @@ class TestFullRound:
 
         # 开始下一局
         r.start_round(fo[0])
-        assert r.game.state == GameState.PLAYING
+        assert r.game.state == GameState.PRE_PLAY
         assert r.game.current_seat == fo[0]
         # 级牌已更新
         assert r.game.level_rank == new_level

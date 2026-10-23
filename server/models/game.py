@@ -64,13 +64,16 @@ class Game:
         return [p.seat for p in self.players if not p.finished and not p.locked]
 
     def next_seat(self, from_seat: int) -> int:
-        """顺时针找下一个在场（未出完且未锁定）的玩家座位。"""
-        seats = self.active_seats()
-        if not seats:
-            return from_seat
-        order = sorted(seats)
-        idx = (order.index(from_seat) + 1) % len(order) if from_seat in order else 0
-        return order[idx]
+        """按出牌方向找下一个在场（未出完且未锁定）的玩家座位。
+
+        from_seat 本身可能已出完（刚出完最后一张），仍从它的下家开始找。
+        """
+        active = set(self.active_seats())
+        for i in range(1, 5):
+            s = (from_seat + i) % 4
+            if s in active:
+                return s
+        return from_seat
 
     def all_others_passed(self) -> bool:
         """除最后出牌者外，所有在场玩家是否全部 pass。"""
@@ -118,12 +121,12 @@ class Game:
 
             events = [{"type": "played", "seat": seat, "cards": [c.to_dict() for c in hand.cards]}]
 
-            # 检查是否出完
-            if not player.hand:
-                player.finished = True
-                player.finish_order = len(self.finish_order) + 1
-                self.finish_order.append(seat)
-                events.append({"type": "player_finished", "seat": seat, "order": player.finish_order})
+            self._mark_finished_if_empty(player, events)
+
+            # 同队两人都已出完（或立棍局有人出完）时立即结算，不再询问叉
+            if self._round_over():
+                self._end_round(events)
+                return {"ok": True, "events": events}
 
             # 检查叉机会（只有出单张时）
             if hand.rank == HandRank.SINGLE and not cards[0].is_joker():
@@ -134,12 +137,6 @@ class Game:
                     self.state = GameState.CHA_ASKING
                     events.append({"type": "cha_ask", "asking_seat": cha_seat, "rank": self.cha_rank})
                     return {"ok": True, "events": events}
-
-            # 检查局是否结束
-            if self._round_over():
-                self.state = GameState.ROUND_END
-                events.append({"type": "round_end", "finish_order": self.finish_order})
-                return {"ok": True, "events": events}
 
             # 前进到下一玩家
             self.current_seat = self.next_seat(seat)
@@ -153,32 +150,15 @@ class Game:
                 return {"ok": False, "reason": "not_your_turn"}
             if self.state != GameState.PLAYING:
                 return {"ok": False, "reason": "wrong_state"}
+            if self.last_play is None:
+                return {"ok": False, "reason": "must_lead"}
 
             self.passed_seats.add(seat)
             events = [{"type": "passed", "seat": seat}]
 
             if self.all_others_passed():
-                last_player = self.get_player(self.last_play_seat)
-                if last_player.finished:
-                    # 接风：最后出牌者已走，出牌权给其队友
-                    teammate_seat = (self.last_play_seat + 2) % 4
-                    teammate = self.get_player(teammate_seat)
-                    if not teammate.finished and not teammate.locked:
-                        self.current_seat = teammate_seat
-                        self.last_play = None
-                        self.passed_seats.clear()
-                        events.append({"type": "jiefeng", "seat": self.current_seat})
-                    else:
-                        # 队友也走了（全洞），局直接结束
-                        if self._round_over():
-                            self.state = GameState.ROUND_END
-                            events.append({"type": "round_end", "finish_order": self.finish_order})
-                else:
-                    # 正常：最后出牌者重新获得出牌权
-                    self.current_seat = self.last_play_seat
-                    self.last_play = None
-                    self.passed_seats.clear()
-                    events.append({"type": "new_lead", "seat": self.current_seat})
+                # 最后出牌者重新获得出牌权；他已出完则由队友接风
+                self._give_lead(self.last_play_seat, events)
             else:
                 self.current_seat = self.next_seat(seat)
                 events.append({"type": "next_turn", "seat": self.current_seat})
@@ -207,28 +187,19 @@ class Game:
                 self.passed_seats.clear()
                 events.append({"type": "cha", "seat": seat, "rank": self.cha_rank})
 
-                if not player.hand:
-                    player.finished = True
-                    player.finish_order = len(self.finish_order) + 1
-                    self.finish_order.append(seat)
-                    events.append({"type": "player_finished", "seat": seat, "order": player.finish_order})
+                self._mark_finished_if_empty(player, events)
+                if self._round_over():
+                    self._end_round(events)
+                    return {"ok": True, "events": events}
 
-                # 寻找可点的玩家
+                # 寻找可点的玩家（叉者出完也照常询问）
                 dian_seat = self._find_dian_candidate(self.cha_rank, seat)
                 if dian_seat is not None:
                     self.asking_seat = dian_seat
                     self.state = GameState.DIAN_ASKING
                     events.append({"type": "dian_ask", "asking_seat": dian_seat, "rank": self.cha_rank})
                 else:
-                    # 死叉：先检查局是否结束
-                    if self._round_over():
-                        self.state = GameState.ROUND_END
-                        self.cha_rank = None
-                        self.asking_seat = None
-                        self.cha_seat = None
-                        events.append({"type": "round_end", "finish_order": self.finish_order})
-                    else:
-                        self._after_cha_no_dian(events)
+                    self._after_cha_no_dian(events)
             else:
                 # 此玩家放弃叉，没有其他人可叉（一副牌一种牌点只有一人能叉）
                 self._resume_normal_play(events)
@@ -252,36 +223,21 @@ class Game:
                 self.passed_seats.clear()
                 events.append({"type": "dian", "seat": seat, "rank": self.cha_rank})
 
-                if not player.hand:
-                    player.finished = True
-                    player.finish_order = len(self.finish_order) + 1
-                    self.finish_order.append(seat)
-                    events.append({"type": "player_finished", "seat": seat, "order": player.finish_order})
+                self._mark_finished_if_empty(player, events)
 
-                # 点后是无解状态：点者获得出牌权
+                # 点后是无解状态：点者获得出牌权（已出完则队友接风）
                 self.cha_rank = None
                 self.cha_seat = None
                 self.asking_seat = None
-                self.passed_seats.clear()
 
                 if self._round_over():
-                    self.state = GameState.ROUND_END
-                    events.append({"type": "round_end", "finish_order": self.finish_order})
+                    self._end_round(events)
                 else:
-                    self.current_seat = seat
-                    self.last_play = None
                     self.state = GameState.PLAYING
-                    events.append({"type": "new_lead", "seat": seat})
+                    self._give_lead(seat, events)
             else:
-                # 放弃点 → 死叉：先检查局是否结束
-                if self._round_over():
-                    self.state = GameState.ROUND_END
-                    self.cha_rank = None
-                    self.asking_seat = None
-                    self.cha_seat = None
-                    events.append({"type": "round_end", "finish_order": self.finish_order})
-                else:
-                    self._after_cha_no_dian(events)
+                # 放弃点 → 死叉
+                self._after_cha_no_dian(events)
 
             return {"ok": True, "events": events}
 
@@ -306,15 +262,42 @@ class Game:
         return None
 
     def _after_cha_no_dian(self, events: list):
-        """死叉：叉者获得出牌权。"""
+        """死叉：叉者获得出牌权（已出完则队友接风）。"""
+        cha_seat = self.cha_seat
         self.cha_rank = None
         self.asking_seat = None
+        self.cha_seat = None
         self.state = GameState.PLAYING
-        self.current_seat = self.cha_seat
+        self._give_lead(cha_seat, events)
+
+    def _give_lead(self, seat: int, events: list):
+        """把自由出牌权交给 seat；seat 已出完时交给其队友（接风）。
+
+        调用前已确认本局未结束，所以 seat 出完时队友必定还在场。
+        """
         self.last_play = None
         self.passed_seats.clear()
+        if self.get_player(seat).finished:
+            self.current_seat = (seat + 2) % 4
+            events.append({"type": "jiefeng", "seat": self.current_seat})
+        else:
+            self.current_seat = seat
+            events.append({"type": "new_lead", "seat": seat})
+
+    def _mark_finished_if_empty(self, player: Player, events: list):
+        if player.hand or player.finished:
+            return
+        player.finished = True
+        player.finish_order = len(self.finish_order) + 1
+        self.finish_order.append(player.seat)
+        events.append({"type": "player_finished", "seat": player.seat, "order": player.finish_order})
+
+    def _end_round(self, events: list):
+        self.state = GameState.ROUND_END
+        self.cha_rank = None
         self.cha_seat = None
-        events.append({"type": "new_lead", "seat": self.current_seat})
+        self.asking_seat = None
+        events.append({"type": "round_end", "finish_order": self.finish_order})
 
     def _resume_normal_play(self, events: list):
         """叉被放弃，回到正常出牌流程。"""
@@ -326,17 +309,26 @@ class Game:
         events.append({"type": "next_turn", "seat": self.current_seat})
 
     def _round_over(self) -> bool:
-        """只剩最多1名玩家还有牌时，本局结束；自动补全最后一名的 finish_order。"""
-        active = self.active_seats()
-        if len(active) <= 1:
-            # 补录最后一名（还没出完牌的玩家）
-            for p in self.players:
-                if not p.finished:
-                    p.finished = True
-                    p.finish_order = len(self.finish_order) + 1
-                    self.finish_order.append(p.seat)
-            return True
-        return False
+        """判断本局是否结束；结束时按出牌方向补全未出完玩家的 finish_order。
+
+        - 立棍局：任何人出完即结束（立棍成功或撅棍）
+        - 普通局：同一队两人都出完即结束（之后的名次不影响结算）
+        """
+        done = set(self.finish_order)
+        if self.li_gun_mode:
+            over = len(done) >= 1
+        else:
+            over = any({t, t + 2} <= done for t in (0, 1))
+        if not over:
+            return False
+        start = self.finish_order[-1]
+        for i in range(1, 4):
+            p = self.get_player((start + i) % 4)
+            if not p.finished:
+                p.finished = True
+                p.finish_order = len(self.finish_order) + 1
+                self.finish_order.append(p.seat)
+        return True
 
     # ------------------------------------------------------------------
     # 序列化（供前端同步用）
@@ -354,6 +346,7 @@ class Game:
             "current_seat": self.current_seat,
             "last_play_seat": self.last_play_seat,
             "table": [c.to_dict() for c in self.table],
+            "leading": self.last_play is None,   # 当前出牌者是否自由出牌（不能 Pass）
             "asking_seat": self.asking_seat,
             "cha_rank": self.cha_rank,
             "finish_order": self.finish_order,

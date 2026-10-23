@@ -176,68 +176,56 @@ def determine_tribute(
     force_quan_dong: bool = False,
 ) -> Optional[TributeState]:
     """
-    根据出完顺序决定进贡类型，返回 TributeState 或 None（无需进贡）。
+    根据上一局出完顺序和本局新发的手牌决定进贡，返回 TributeState 或 None（无需进贡）。
 
-    土皇上：第1名和第4名同队 → 返回 None（跳过进贡）。
-    反贡：输家队某玩家持有王炸（BJ+RJ） → 反贡。
-    全洞：第1、第2同队。
-    半洞：第1、第3同队。
+    finish_order 必须是完整的4人顺序（Game 结束时会补全）。
+    - 土皇上：第1、第4名同队 → None，由第1名先出。
+    - 全洞（含立棍/撅棍后的强制全洞）：输家两人各进贡一张，赢家商量分配；
+      赢家各还一张，输家商量分配并商量谁先出。
+      反贡：任一输家同时持有大小王 → 进贡/还贡双方颠倒，流程相同。
+    - 半洞：第4名给第1名进贡，第1名还贡，第4名先出。
+      反贡：第4名本人持有大小王（第2名不参与进贡，有王也不算）→ 第1名给第4名进贡，第1名先出。
+
+    无论哪种情况，下一局都由进贡方（giver_seats）先出；两名进贡方时由他们商量。
     """
-    seats = finish_order
-    team0 = seats[0] % 2  # 第1名所在队伍
-    loser_team = 1 - team0
-
-    # 土皇上检测：第1、第4同队且没有强制进贡标记
-    # force_quan_dong（立棍/撅棍后）必须跳过土皇上检测
-    if not force_quan_dong and len(seats) == 4 and seats[0] % 2 == seats[3] % 2:
+    if len(finish_order) < 4:
         return None
+    first, last = finish_order[0], finish_order[3]
+    win_team = first % 2
 
-    # 全洞（含 force_quan_dong 的情形）
-    is_quan_dong = force_quan_dong or (len(seats) >= 2 and seats[0] % 2 == seats[1] % 2)
+    if not force_quan_dong and last % 2 == win_team:
+        return None   # 土皇上
+
+    player_map = {p.seat: p for p in players}
+
+    def has_joker_bomb(seat: int) -> bool:
+        ranks = {c.rank for c in player_map[seat].hand}
+        return "BJ" in ranks and "RJ" in ranks
+
+    is_quan_dong = force_quan_dong or finish_order[1] % 2 == win_team
     if is_quan_dong:
-        loser_seats = [s for s in seats if s % 2 == loser_team]
-        winner_seats = [s for s in seats if s % 2 == team0]
-        # 反贡检测：输家有王炸（土皇上已排除，此处输家两人都在）
-        loser_players_map = {p.seat: p for p in players if p.team == loser_team}
-        fan_gong_holder = None
-        for seat in loser_seats[:2]:
-            p = loser_players_map[seat]
-            ranks = {c.rank for c in p.hand}
-            if "BJ" in ranks and "RJ" in ranks:
-                fan_gong_holder = seat
-                break
-        if fan_gong_holder is not None:
-            # 反贡：赢家全部给输家进贡
-            winner_seats_sorted = sorted(winner_seats[:2])
-            loser_seats_sorted = sorted(loser_seats[:2])
-            state = TributeState("fan_gong", winner_seats_sorted, loser_seats_sorted)
-            _fill_tribute_cards(state, players, level_rank)
-            return state
-        state = TributeState("quan_dong", loser_seats[:2], winner_seats[:2])
-        _fill_tribute_cards(state, players, level_rank)
-        return state
+        winners = [win_team, win_team + 2]
+        losers = [1 - win_team, 3 - win_team]
+        if any(has_joker_bomb(s) for s in losers):
+            state = TributeState("fan_gong", winners, losers)
+        else:
+            state = TributeState("quan_dong", losers, winners)
+    else:
+        # 半洞：只有第4名本人有王炸才反贡
+        if has_joker_bomb(last):
+            state = TributeState("fan_gong", [first], [last])
+        else:
+            state = TributeState("ban_dong", [last], [first])
 
-    # 半洞：第1、第3同队
-    if len(seats) >= 3 and seats[0] % 2 == seats[2] % 2:
-        # 反贡检测：第4名（唯一输家）有王炸
-        last_seat = seats[3] if len(seats) >= 4 else seats[-1]
-        last_player = next((p for p in players if p.seat == last_seat), None)
-        if last_player:
-            ranks = {c.rank for c in last_player.hand}
-            if "BJ" in ranks and "RJ" in ranks:
-                # 反贡：半洞赢家给唯一持王炸的输家进贡
-                giver = seats[0]   # 第1名
-                receiver = last_seat
-                state = TributeState("fan_gong", [giver], [receiver])
-                _fill_tribute_cards(state, players, level_rank)
-                return state
-        giver = last_seat           # 最后出完的输家
-        receiver = seats[0]         # 第1名
-        state = TributeState("ban_dong", [giver], [receiver])
-        _fill_tribute_cards(state, players, level_rank)
-        return state
+    _fill_tribute_cards(state, players, level_rank)
+    return state
 
-    return None
+
+def ligun_ask_start_seat(finish_order: list[int], force_quan_dong: bool = False) -> int:
+    """立棍询问从谁开始：土皇上从第1名开始，其余从上一局最后一名开始。"""
+    if not force_quan_dong and finish_order[0] % 2 == finish_order[-1] % 2:
+        return finish_order[0]
+    return finish_order[-1]
 
 
 def _fill_tribute_cards(state: TributeState, players: list[Player], level_rank: str):

@@ -226,31 +226,28 @@ class TestChaDian:
 
 class TestRoundEnd:
     def test_finish_order_complete(self):
-        """前两名走完后，_round_over 应自动补录剩余两人（active==2时不触发，==1时触发）。"""
+        """同队两人出完即结束，并按出牌方向补录剩余两人的名次。"""
         game = make_game()
         for i in range(4):
             force_hand(game, i, [c("K")])
 
-        # 手动模拟前两名走完（队0：座位0,2）
-        for order, seat in enumerate([0, 2], start=1):
+        # 座位0第1、座位1第2：两队各走一人，不结束
+        for order, seat in enumerate([0, 1], start=1):
             p = game.players[seat]
             p.hand = []
             p.finished = True
             p.finish_order = order
             game.finish_order.append(seat)
-
-        # 还有座位1和3，active==2，不应触发
         assert not game._round_over()
-        assert len(game.finish_order) == 2
 
-        # 座位1再走，active==1，触发并补录座位3
-        game.players[1].hand = []
-        game.players[1].finished = True
-        game.players[1].finish_order = 3
-        game.finish_order.append(1)
+        # 座位2第3走 → 队0两人都走完，结束并补录座位3
+        game.players[2].hand = []
+        game.players[2].finished = True
+        game.players[2].finish_order = 3
+        game.finish_order.append(2)
 
         assert game._round_over()
-        assert len(game.finish_order) == 4
+        assert game.finish_order == [0, 1, 2, 3]
         assert game.players[3].finish_order == 4
         assert game.players[3].finished
 

@@ -90,8 +90,8 @@
     <ChaDialog        v-if="gamePhase === 'CHA_ASKING'  && gs?.asking_seat === store.mySeat" @respond="respondCha" />
     <DianDialog       v-if="gamePhase === 'DIAN_ASKING' && gs?.asking_seat === store.mySeat" @respond="respondDian" />
     <LigunDialog      v-if="store.ligunAskSeat === store.mySeat" @respond="respondLigun" />
-    <TributePanel     v-if="store.tributePhase === 'tribute_select'" />
-    <ReturnSubmitPanel v-if="store.tributePhase === 'return_submit'" :my-hand="myHand" @submit="submitReturn" />
+    <TributePanel     v-if="isTributeSelector" />
+    <ReturnSubmitPanel v-if="isReturnSubmitter" :my-hand="myHand" @submit="submitReturn" />
     <RoundSummary     v-if="store.roundSummary && !store.roundSummary.game_over" :summary="store.roundSummary" @close="store.roundSummary = null" />
     <GameOver         v-if="store.roundSummary?.game_over" :winner-team="store.roundSummary.winner_team" @back="goLobby" />
     <FirstSeatDialog  v-if="store.firstSeatCandidates?.includes(store.mySeat)" @respond="respondFirstSeat" />
@@ -246,10 +246,17 @@ const isMyTurn   = computed(() => store.isMyTurn);
 const seat       = computed(() => store.mySeat);
 const players    = computed(() => gs.value?.players || []);
 
-const canPass = computed(() => {
-  const lps = gs.value?.last_play_seat;
-  return lps != null && lps >= 0 && lps !== store.mySeat;
-});
+// 进贡/还贡选牌：只对收牌方弹出；还贡提交：只对还贡方弹出
+const isTributeSelector = computed(() =>
+  ["tribute_select", "return_select"].includes(store.tributePhase) &&
+  (store.selectionState?.selector_seats || []).includes(store.mySeat)
+);
+const isReturnSubmitter = computed(() =>
+  store.tributePhase === "return_submit" &&
+  (store.tributeInfo?.receiver_seats || []).includes(store.mySeat)
+);
+
+const canPass = computed(() => gs.value != null && !gs.value.leading);
 
 function playerAt(rel) {
   const s = ((seat.value + rel) % 4 + 4) % 4;
@@ -292,7 +299,10 @@ function respondCha(v)   { socket.emit("respond_cha",   { do_cha:   v }); }
 function respondDian(v)  { socket.emit("respond_dian",  { do_dian:  v }); }
 function respondLigun(v) { socket.emit("respond_ligun", { do_ligun: v }); }
 function respondFirstSeat() { socket.emit("respond_first_seat", {}); store.firstSeatCandidates = null; }
-function submitReturn(i) { socket.emit("tribute_return_submit", { card_index: i }); }
+function submitReturn(i) {
+  socket.emit("tribute_return_submit", { card_index: i });
+  store.tributePhase = "return_waiting";
+}
 function goLobby() {
   store.reset(); socket.disconnect();
   uni.reLaunch({ url: "/pages/lobby/lobby" });

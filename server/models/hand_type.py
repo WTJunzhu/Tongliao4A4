@@ -29,14 +29,24 @@ class Hand:
 
     def can_beat(self, other: "Hand") -> bool:
         """判断 self 能否管 other。"""
+        # 4A4 之间按 纯红 > 纯黑 > 花 比较，同档不能互管
         if self.rank == HandRank.FOUR_ONE_FOUR:
+            if other.rank == HandRank.FOUR_ONE_FOUR:
+                return self.key > other.key
             return True
         if other.rank == HandRank.FOUR_ONE_FOUR:
             return False
 
-        # 双龙只能被 4A4 管（上面已处理）
+        # 双龙只能被 4A4（上面已处理）或更大的同对数双龙管
         if other.rank == HandRank.STRAIGHT_PAIRS:
-            return False
+            return (
+                self.rank == HandRank.STRAIGHT_PAIRS
+                and len(self.cards) == len(other.cards)
+                and self.key > other.key
+            )
+        # 双龙能管任意张数的单龙，其他牌型都管不了
+        if self.rank == HandRank.STRAIGHT_PAIRS:
+            return other.rank == HandRank.STRAIGHT
 
         # 炸弹可以管任何非炸弹
         self_is_bomb = self.rank >= HandRank.TRIPLE
@@ -52,8 +62,10 @@ class Hand:
                 return self.rank > other.rank
             return self.key > other.key
 
-        # 同类型非炸弹比较
+        # 同类型非炸弹比较；单龙之间必须张数相同
         if self.rank != other.rank:
+            return False
+        if self.rank == HandRank.STRAIGHT and len(self.cards) != len(other.cards):
             return False
         return self.key > other.key
 

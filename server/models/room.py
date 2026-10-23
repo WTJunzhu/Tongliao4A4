@@ -113,7 +113,7 @@ class Room:
 
         self.game = Game(self.players, level)
         self.game.current_seat = first_seat
-        self.game.state = GameState.PLAYING
+        self.game.state = GameState.PRE_PLAY   # 先立棍/进贡，_begin_play 后才进入 PLAYING
 
     def start_first_round(self):
         """第一局：先发牌，找红桃3确定首家和台上队，再初始化 Game。"""
@@ -130,7 +130,7 @@ class Room:
 
         self.game = Game(self.players, "3")
         self.game.current_seat = first_seat
-        self.game.state = GameState.PLAYING
+        self.game.state = GameState.PRE_PLAY   # 先立棍/进贡，_begin_play 后才进入 PLAYING
         return first_seat
 
     def find_red3_seat(self) -> int:
@@ -180,13 +180,9 @@ class Room:
             summary["game_winner"] = self.on_stage_team if game_over else None
         else:
             # 台下队赢 → 台上队下台，台下队上台（不升级）
-            # 直J / 直A 惩罚
-            if level == "J":
-                self.team_levels[self.on_stage_team] = "3"
-                summary["zhi_j"] = True
-            elif level == "A":
-                self.team_levels[self.on_stage_team] = "J"
-                summary["zhi_a"] = True
+            # 只有反洞（台上两人第3、4名）才触发直J / 直A
+            if result.is_quan_dong:
+                self._apply_zhi_penalty(self.on_stage_team, summary)
             self.on_stage_team = winner_team
             summary["level_after"] = self.team_levels[self.on_stage_team]
             summary["game_over"] = False
@@ -199,40 +195,41 @@ class Room:
         """立棍/撅棍结算。"""
         li_gun_team = li_gun_seat % 2
         opponent_team = 1 - li_gun_team
-        level = self.team_levels[self.on_stage_team]
         success = finish_order[0] == li_gun_seat
 
         self.next_force_tribute = True
-        summary = {"li_gun_success": success, "finish_order": finish_order}
+        winner_team = li_gun_team if success else opponent_team
+        steps = 3 if success and li_gun_team == self.on_stage_team else 2
+        summary = {
+            "li_gun_success": success,
+            "finish_order": finish_order,
+            "winner_team": winner_team,
+        }
 
-        if success:
-            if li_gun_team == self.on_stage_team:
-                new_level = next_level(level, 3)
-                self.team_levels[self.on_stage_team] = new_level
-                summary["level_after"] = new_level
-                # level 是修改前的级别（正确的 level_before）
-                game_over = self._check_game_over(self.on_stage_team, level, new_level)
-                summary["game_over"] = game_over
-            else:
-                # 台下队立棍成功：上台+升2级
-                level_before_ligun = self.team_levels[li_gun_team]
-                new_level = next_level(level_before_ligun, 2)
-                self.team_levels[li_gun_team] = new_level
-                self.on_stage_team = li_gun_team
-                summary["level_after"] = new_level
-                game_over = self._check_game_over(li_gun_team, level_before_ligun, new_level)
-                summary["game_over"] = game_over
-        else:
-            # 撅棍：对方上台+升2级
-            level_before_opp = self.team_levels[opponent_team]
-            new_level = next_level(level_before_opp, 2)
-            self.team_levels[opponent_team] = new_level
-            self.on_stage_team = opponent_team
-            summary["level_after"] = new_level
-            game_over = self._check_game_over(opponent_team, level_before_opp, new_level)
-            summary["game_over"] = game_over
+        # 台上队因立棍输掉本局（自己撅棍 / 台下队立棍成功）时，打J/打A 同样直J/直A
+        if winner_team != self.on_stage_team:
+            self._apply_zhi_penalty(self.on_stage_team, summary)
 
+        level_before = self.team_levels[winner_team]
+        new_level = next_level(level_before, steps)
+        self.team_levels[winner_team] = new_level
+        self.on_stage_team = winner_team
+        summary["level_before"] = level_before
+        summary["level_after"] = new_level
+        game_over = self._check_game_over(winner_team, level_before, new_level)
+        summary["game_over"] = game_over
+        summary["game_winner"] = winner_team if game_over else None
         return summary
+
+    def _apply_zhi_penalty(self, team: int, summary: dict):
+        """直J：打J退回打3；直A：打A退回打J。"""
+        level = self.team_levels[team]
+        if level == "J":
+            self.team_levels[team] = "3"
+            summary["zhi_j"] = True
+        elif level == "A":
+            self.team_levels[team] = "J"
+            summary["zhi_a"] = True
 
     def _check_game_over(self, team: int, level_before: str, level_after: str) -> bool:
         """检查是否触发游戏结束。"""
